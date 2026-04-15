@@ -12,9 +12,10 @@ def perf_test(func: Callable[[], object], arg: dict) -> float:
     rep_ms = int(arg.get("rep_ms", os.environ.get("FLA_KERNEL_BENCH_REP_MS", 100)))
     torch.cuda.synchronize()
     ms = triton.testing.do_bench(func, warmup=warmup_ms, rep=rep_ms, quantiles=[0.5, 0.2, 0.8])[0]
+    us = float(ms) * 1000
     print(
-        f"[PERF] kernel={arg['kernel']} case={arg['name']} "
-        f"tags={','.join(arg.get('tags', []))} latency_ms={float(ms):.6f}"
+        f"[PERF] {arg['kernel']} | {arg['name']} | "
+        f"Avg Latency: {us:.2f} us"
     )
     return float(ms)
 

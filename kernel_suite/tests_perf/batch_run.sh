@@ -1,0 +1,20 @@
+python3 test_chunk_local_cumsum_perf.py
+python3 test_causal_conv1d_bwd_kernel_perf.py
+python3 test_chunk_scaled_dot_kkt_fwd_perf.py
+python3 test_causal_conv1d_fwd_kernel_perf.py
+# FAILED: python3 test_fused_recurrent_bwd_perf.py
+python3 test_chunk_bwd_dh_perf.py
+# FAILED: python3 test_fused_recurrent_fwd_perf.py
+python3 test_chunk_bwd_dqkwg_perf.py
+python3 test_layer_norm_gated_bwd_perf.py
+python3 test_chunk_bwd_dv_local_perf.py
+python3 test_layer_norm_gated_fwd_kernel_perf.py
+python3 test_chunk_bwd_dv_perf.py
+python3 test_layer_norm_gated_fwd_perf.py
+python3 test_chunk_fwd_h_perf.py
+# FAILED: python3 test_prepare_wy_repr_bwd_perf.py
+python3 test_chunk_fwd_o_perf.py
+# FAILED: python3 test_recompute_w_u_fwd_perf.py
+python3 test_chunk_gated_delta_rule_bwd_dhu_perf.py
+python3 test_solve_tril_perf.py
+python3 test_chunk_gated_delta_rule_fwd_h_perf.py
