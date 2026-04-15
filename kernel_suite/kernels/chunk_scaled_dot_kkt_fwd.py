@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import torch
+import triton
 
 from kernel_suite.acc_utils import assert_close_tree, clone_value
 from kernel_suite.kernels.common_builders import beta, logsigmoid, make_cu_seqlens, normalize, randn
-from fla.ops.common.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd
+from fla.ops.common.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd, chunk_scaled_dot_kkt_fwd_kernel
+from fla.utils import autotune_cache_kwargs, check_shared_mem
+from fla.ops.utils import prepare_chunk_indices, prepare_chunk_offsets
 
 KERNEL_NAME = "chunk_scaled_dot_kkt_fwd"
 SOURCE_PATH = "fla/ops/common/chunk_scaled_dot_kkt.py"
@@ -70,6 +73,32 @@ def run_accuracy_case(case):
     assert_close_tree(actual[:, :, :, : expected.shape[-1]], expected, atol=3e-2, rtol=3e-2)
 
 
+def return_args(inputs):
+    k=inputs["k"]
+    g=inputs["g"]
+    beta=inputs["beta"]
+    cu_seqlens=inputs["cu_seqlens"]
+    chunk_size=inputs["chunk_size"]
+    B, T, H, K, HV = *k.shape, beta.shape[2]
+    chunk_indices=None
+    output_dtype=torch.float32
+    BT = chunk_size
+    if chunk_indices is None and cu_seqlens is not None:
+        chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
+    NT = triton.cdiv(T, BT) if cu_seqlens is None else len(chunk_indices)
+    A = torch.empty(B, T, HV, BT, device=k.device, dtype=output_dtype)
+    return {"grid": (NT, B * HV), "input_data": {
+        "k": k, "g": g, "beta": beta, "A": A, "cu_seqlens": cu_seqlens, "chunk_indices": chunk_indices, "T": T, "H": H, "HV": HV, "K": K, "BT": BT
+    }}
+
+
+def fn_triton(grid, input_data):
+    chunk_scaled_dot_kkt_fwd_kernel[grid](**input_data)
+    return
+
+
 def make_perf_case(case):
     inputs = build_inputs(case)
-    return lambda: launch(inputs), {"kernel": KERNEL_NAME, "name": case["name"], "tags": case["tags"]}
+    data = return_args(inputs)
+    return fn_triton, data
+

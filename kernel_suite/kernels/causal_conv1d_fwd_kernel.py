@@ -94,6 +94,30 @@ def run_accuracy_case(case):
     assert_close_tree(actual, expected, atol=2e-3, rtol=2e-3)
 
 
+def return_args(inputs):
+    x = inputs["x"]
+    B, T, D = inputs["B"], inputs["T"], inputs["D"]
+    W = inputs["W"]
+    NT = len(inputs["chunk_indices"]) if inputs["chunk_indices"] is not None else triton.cdiv(T, 64)
+    NB = triton.cdiv(B * T, 1024)
+    BW = triton.next_power_of_2(W)
+    stride_x_n, stride_x_t, stride_x_d = x.stride()
+
+    def grid(meta):
+        return (triton.cdiv(D, meta["BD"]), NT, B)
+
+    return {"grid": grid,
+    "input_data": {
+        "x": x, "y": inputs["y"], "weight": inputs["weight"], "bias": inputs["bias"], "residual": inputs["residual"], "cu_seqlens": inputs["cu_seqlens"], "initial_state": inputs["initial_state"], "chunk_indices": inputs["chunk_indices"], "B": B, "T": T, "D": D, "W": W, "BT": 64, "BW": BW, "NB": NB, "stride_x_n": stride_x_n, "stride_x_t": stride_x_t, "stride_x_d": stride_x_d, "ACTIVATION": inputs["activation"]
+    }}
+
+
+def fn_triton(grid, input_data):
+    causal_conv1d_fwd_kernel[grid](**input_data)
+    return
+
+
 def make_perf_case(case):
     inputs = build_inputs(case)
-    return lambda: launch(inputs), {"kernel": KERNEL_NAME, "name": case["name"], "tags": case["tags"]}
+    data = return_args(inputs)
+    return fn_triton, data

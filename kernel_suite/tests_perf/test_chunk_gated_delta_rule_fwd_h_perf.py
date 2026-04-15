@@ -6,3 +6,4 @@ from kernel_suite.kernels import chunk_gated_delta_rule_fwd_h as module
 
 if __name__ == "__main__":
     run_performance_cases(module)
+

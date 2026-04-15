@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import torch
+import triton
+import math
 
 from kernel_suite.acc_utils import assert_close_tree, clone_value
 from kernel_suite.kernels.common_builders import make_cu_seqlens, normalize, randn
 from fla.ops.common.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd
-from fla.ops.utils.solve_tril import solve_tril
+from fla.ops.utils.solve_tril import solve_tril, solve_tril_16x16_kernel, merge_16x16_to_32x32_inverse_kernel, merge_16x16_to_64x64_inverse_kernel
+from fla.utils import autotune_cache_kwargs, check_shared_mem
+from fla.ops.utils import prepare_chunk_indices, prepare_chunk_offsets
+from fla.utils import autotune_cache_kwargs, get_multiprocessor_count, input_guard
+from fla.utils import IS_TMA_SUPPORTED, autotune_cache_kwargs, input_guard
+
 
 KERNEL_NAME = "solve_tril"
 SOURCE_PATH = "fla/ops/utils/solve_tril.py"
@@ -27,7 +34,7 @@ def build_inputs(case):
     cu = make_cu_seqlens(case["cu_seqlens"])
     t = int(cu[-1].item())
     k = normalize(randn((1, t, case["H"], case["D"]), case["dtype"]))
-    beta = torch.randn((1, t, case["H"]), device="cuda", dtype=case["dtype"]).sigmoid()
+    beta = torch.randn((1, t, case["H"]), device="npu", dtype=case["dtype"]).sigmoid()
     A = chunk_scaled_dot_kkt_fwd(k=k, beta=beta, cu_seqlens=cu, chunk_size=case["chunk_size"])
     return {"A": A, "cu_seqlens": cu}
 
@@ -61,6 +68,42 @@ def run_accuracy_case(case):
     assert_close_tree(actual, expected, atol=1e-4, rtol=1e-4)
 
 
+def return_args(inputs):
+    cu_seqlens: torch.Tensor = None
+    chunk_indices: torch.LongTensor = None
+    output_dtype: torch.dtype = torch.float
+    A = inputs["A"]
+    cu_seqlens=inputs["cu_seqlens"]
+    assert A.shape[-1] in [16, 32, 64]
+    output_dtype = A.dtype if output_dtype is None else output_dtype
+
+    B, T, H, BT = A.shape
+    if chunk_indices is None and cu_seqlens is not None:
+        chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
+    NT = len(chunk_indices) if cu_seqlens is not None else triton.cdiv(T, BT)
+
+    Ai = torch.zeros_like(A, dtype=output_dtype)
+    if BT == 16:
+        merge_fn = solve_tril_16x16_kernel
+    elif BT == 32:
+        merge_fn = merge_16x16_to_32x32_inverse_kernel
+    elif BT == 64:
+        merge_fn = merge_16x16_to_64x64_inverse_kernel
+    return {"grid": (NT, B * H), "input_data": {
+        "A": A, "Ai": Ai, "cu_seqlens": cu_seqlens, "chunk_indices": chunk_indices, "T": T, "H": H, "BT": BT, "USE_TMA": IS_TMA_SUPPORTED
+    }}
+
+def fn_triton(grid, input_data):
+    if input_data["BT"] == 16:
+        solve_tril_16x16_kernel[grid](**input_data)
+    elif input_data["BT"] == 32:
+        merge_16x16_to_32x32_inverse_kernel[grid](**input_data)
+    elif input_data["BT"] == 64:
+        merge_16x16_to_64x64_inverse_kernel[grid](**input_data)
+    return
+
+
 def make_perf_case(case):
     inputs = build_inputs(case)
-    return lambda: launch(inputs), {"kernel": KERNEL_NAME, "name": case["name"], "tags": case["tags"]}
+    data = return_args(inputs)
+    return fn_triton, data

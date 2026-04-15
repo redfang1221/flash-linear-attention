@@ -29,6 +29,7 @@ def build_inputs(case):
     dht = randn(initial_state.shape, case["dtype"])
     cu_seqlens = make_cu_seqlens(case["cu_seqlens"]) if "cu_seqlens" in case else None
     chunk_indices = prepare_chunk_indices(cu_seqlens, 64, cu_seqlens_cpu=cu_seqlens.cpu()) if cu_seqlens is not None else None
+    print("chunk_indices: ", chunk_indices)
     y, _ = causal_conv1d_fwd(
         x=x, weight=weight, bias=bias, residual=None, initial_state=initial_state, output_final_state=False,
         activation=None, cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens.cpu() if cu_seqlens is not None else None, chunk_indices=chunk_indices
@@ -101,6 +102,30 @@ def run_accuracy_case(case):
     assert_close_tree(actual, expected, atol=3e-2, rtol=3e-2)
 
 
+def return_args(inputs):
+    x = inputs["x"]
+    B, T, D, W = inputs["B"], inputs["T"], inputs["D"], inputs["W"]
+    NT = len(inputs["chunk_indices"]) if inputs["chunk_indices"] is not None else triton.cdiv(T, 64)
+    NB = triton.cdiv(B * T, 1024)
+    BW = triton.next_power_of_2(W)
+    stride_x_n, stride_x_t, stride_x_d = x.stride()
+    stride_dx_n, stride_dx_t, stride_dx_d = inputs["dx"].stride()
+
+    def grid(meta):
+        return (triton.cdiv(D, meta["BD"]), NT, B)
+
+    return {"grid": grid,
+    "input_data": {
+        "x": x, "y": inputs["y"] if inputs["activation"] is not None else None, "weight": inputs["weight"], "initial_state": inputs["initial_state"], "dht": inputs["dht"], "dy": inputs["dy"], "dx": inputs["dx"], "dw": inputs["dw"], "db": inputs["db"], "cu_seqlens": inputs["cu_seqlens"], "chunk_indices": inputs["chunk_indices"], "B": B, "T": T, "D": D, "W": W, "BT": 64, "BW": BW, "NB": NB, "stride_x_n": stride_x_n, "stride_x_t": stride_x_t, "stride_x_d": stride_x_d, "stride_dx_n": stride_dx_n, "stride_dx_t": stride_dx_t, "stride_dx_d": stride_dx_d, "ACTIVATION": inputs["activation"]
+    }}
+
+
+def fn_triton(grid, input_data):
+    causal_conv1d_bwd_kernel[grid](**input_data)
+    return
+
+
 def make_perf_case(case):
     inputs = build_inputs(case)
-    return lambda: launch(inputs), {"kernel": KERNEL_NAME, "name": case["name"], "tags": case["tags"]}
+    data = return_args(inputs)
+    return fn_triton, data
